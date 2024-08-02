@@ -9,17 +9,19 @@
 #include <netinet/ip.h>
 #include<cassert>
 
-
+//kills program if some strange error occurs
 static void die(const char *msg) {
     int err = errno;
     fprintf(stderr, "[%d] %s\n", err, msg);
     abort();
 }
 
+//helper for logging msg to console
 static void msg(const char *msg) {
     fprintf(stderr, "%s\n", msg);
 }
 
+//function for reading in from buffer 
 static int32_t read_full(int fd, char *buf, size_t n){
     while (n > 0){
         ssize_t rv = read(fd, buf, n);
@@ -33,6 +35,7 @@ static int32_t read_full(int fd, char *buf, size_t n){
     return 0;
 }
 
+//function for writing to write buffer
 static int32_t write_all(int fd, char *buf, size_t n){
     while (n > 0){
         ssize_t rv = write(fd, buf, n);
@@ -48,23 +51,29 @@ static int32_t write_all(int fd, char *buf, size_t n){
 
 const size_t k_max_msg = 4096;
 
+/*
+This function builds the query that is going to be sent to the server
+message structure: | len | message |
+The first 4 byes will contain the length of the message
+the rest of the message will contain text of len variable length
+*/
 static int32_t query(int fd, const char *text){
-    uint32_t len = (uint32_t)strlen(text);
+    uint32_t len = (uint32_t)strlen(text); //get length of message being sent
     if (len > k_max_msg){
-        return -1;
+        return -1; //error if message is longer than max message length described
     }
     
     char wbuf[4 + k_max_msg];
-    memcpy(wbuf, &len, 4);
-    memcpy(&wbuf[4], text, len);
-    if(int32_t err = write_all(fd, wbuf, 4 + len)) {
+    memcpy(wbuf, &len, 4); //copying the length into the first four bytes of the write buffer
+    memcpy(&wbuf[4], text, len); //copying the actual text to be sent into the rest of the write buffer
+    if(int32_t err = write_all(fd, wbuf, 4 + len)) { //writes to the server file descripter the length of the message plus 4 bytes to include header
         return err;
     }
 
-    //4 bytes header
-    char rbuf[4 + k_max_msg];
+    //receiving the response from the server
+    char rbuf[4 + k_max_msg + 1]; //buffer to read in response in same define format: | len | message |
     errno = 0;
-    int32_t err = read_full(fd, rbuf, 4);
+    int32_t err = read_full(fd, rbuf, 4); //reading in the first 4 bytes (len) from the server file descriptor
     if (err){
         if (errno == 0){
             msg("EOF");
@@ -74,21 +83,21 @@ static int32_t query(int fd, const char *text){
         }
         return err;
     }
-    memcpy(&len, rbuf, 4);
+    memcpy(&len, rbuf, 4); //copying the length from read buffer into len variable
     if (len > k_max_msg){
         msg("too long");
         return -1;
     }
 
     //reply body
-    err = read_full(fd, &rbuf[4], len);
+    err = read_full(fd, &rbuf[4], len); //reading the message into the read buffer from the server file descriptor
     if(err){
         msg("read error");
         return err;
     }
 
     //process
-    rbuf[4 + len] = '\0';
+    rbuf[4 + len] = '\0'; //add null terminator
     printf("server responded %s\n", &rbuf[4]);
     return 0;
 }

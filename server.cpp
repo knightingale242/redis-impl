@@ -62,6 +62,7 @@ static int32_t write_all(int fd, char *buf, size_t n){
 const size_t k_max_msg = 4096;
 
 //parser to handle incoming requests
+//same as client but start with reading and then writing
 static int32_t one_request(int connfd){
     //4 byte header
     char rbuf[4 + k_max_msg + 1];
