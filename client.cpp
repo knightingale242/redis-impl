@@ -57,6 +57,7 @@ message structure: | len | message |
 The first 4 byes will contain the length of the message
 the rest of the message will contain text of len variable length
 */
+
 static int32_t query(int fd, const char *text){
     uint32_t len = (uint32_t)strlen(text); //get length of message being sent
     if (len > k_max_msg){
