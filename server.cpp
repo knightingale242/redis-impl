@@ -12,9 +12,10 @@
 #include<fcntl.h>
 #include<poll.h>
 
+//states of a connection
 enum {
-    STATE_REQ = 0,
-    STATE_RES = 1,
+    STATE_REQ = 0, //reading requests
+    STATE_RES = 1, //Sending responses
     STATE_END = 2,
 };
 
@@ -36,19 +37,6 @@ static void die(const char *msg) {
     int err = errno;
     fprintf(stderr, "[%d] %s\n", err, msg);
     abort();
-}
-
-static void do_something(int connfd) {
-    char rbuf[64] = {};
-    ssize_t n = read(connfd, rbuf, sizeof(rbuf) - 1);
-    if (n < 0) {
-        msg("read() error");
-        return;
-    }
-    printf("client says: %s\n", rbuf);
-
-    char wbuf[] = "world";
-    write(connfd, wbuf, strlen(wbuf));
 }
 
 static int32_t read_full(int fd, char *buf, size_t n){
@@ -169,7 +157,7 @@ static int32_t accept_new_conn(std::vector<Conn *> &fd2conn, int fd) {
     conn->rbuf_size = 0;
     conn->wbuf_size = 0;
     conn->wbuf_sent = 0;
-    conn_put(fd2conn, conn);
+    conn_put(fd2conn, conn); //add new connection to vector of connections
 
     return 0;
 }
@@ -240,6 +228,7 @@ int main() {
         }
 
         //process active connections
+        //todo: use rv value to count how many events you have processed until you match the rv value and stop the loop early
         for (size_t i = 1; i < poll_args.size(); ++i) {
             if (poll_args[i].revents) {
                 Conn *conn = fd2conn[poll_args[i].fd];
