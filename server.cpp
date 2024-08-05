@@ -134,10 +134,9 @@ static void conn_put(std::vector<Conn *> &fd2conn, struct Conn *conn){
 }
 
 static int32_t accept_new_conn(std::vector<Conn *> &fd2conn, int fd) {
-    //accept
     struct sockaddr_in client_addr = {};
     socklen_t socklen = sizeof(client_addr);
-    int connfd = accept(fd, (struct sockaddr *)&client_addr, &socklen);
+    int connfd = accept(fd, (struct sockaddr *)&client_addr, &socklen); //get file descriptor of new connection
     if (connfd < 0){
         msg("accept() error");
         return -1;
@@ -163,15 +162,129 @@ static int32_t accept_new_conn(std::vector<Conn *> &fd2conn, int fd) {
 }
 
 static void connection_io(Conn *conn){
-    // if (conn->state == STATE_REQ) {
-    //     state_req(conn);
-    // }
-    // else if (conn->state == STATE_RES) {
-    //     state_res(conn);
-    // }
-    // else {
-    //     assert(0); //not expected
-    // }
+    if (conn->state == STATE_REQ) {
+        state_req(conn);
+    }
+    else if (conn->state == STATE_RES) {
+        state_res(conn);
+    }
+    else {
+        assert(0); //not expected
+    }
+}
+
+static void state_req(Conn *conn) {
+    while(try_fill_buffer(conn));
+}
+
+static bool try_fill_buffer(Conn *conn) {
+    //rbuf_size = temp value to keep track of how big the buffer currently is
+    //sizeof(rbuf) gets the max size the buffer should be
+    assert(conn->rbuf_size < sizeof(conn->rbuf));
+    ssize_t rv = 0;
+    do {
+        size_t cap = sizeof(conn->rbuf) - conn->rbuf_size; //max value able to read into the buffer right now
+        rv = read(conn->fd, &conn->rbuf[conn->rbuf_size], cap);
+    } while (rv < 0 && errno == EINTR);
+
+    if (rv < 0 && errno == EAGAIN) {
+        return false;
+    }
+    if (rv < 0){
+        msg("read() error");
+        return false;
+    }
+    if (rv == 0) {
+        if (conn->rbuf_size > 0) {
+            msg("unexpected EOF");
+        }
+        else {
+            msg("EOF");
+        }
+    }
+
+    conn->rbuf_size += sizeof(rv); //add however much was read into the buffer to the current size of the buffer
+    assert(conn->rbuf_size <= sizeof(conn->rbuf));
+
+    while(try_one_request(conn)) {} //clients could send multiple requests without waiting for responses which is why we loop
+    return (conn->state == STATE_REQ);
+}
+
+static bool try_one_request(Conn *conn) {
+    if (conn->rbuf_size < 4) {
+        return false; //need atleast 4 bits for a valid request
+    }
+
+    //get length from the request
+    uint32_t len = 0;
+    memcpy(&len, &conn->rbuf[0], 4);
+
+    if (len > k_max_msg) {
+        msg("too long");
+        conn->state = STATE_END;
+        return false;
+    }
+
+    //got enough bits to decipher length but the full message has not arrived yet
+    if (4 + len > conn->rbuf_size) {
+        return false;
+    }
+
+    //got full message, going to echo it
+    printf("client says: %.*s\n", len, &conn->rbuf[4]);
+
+    //generate response
+    memcpy(&conn->wbuf, &len, 4);
+    memcpy(&conn->wbuf[4], &conn->rbuf[4], len);
+    conn->wbuf_size += 4 + len;
+
+    //removing previous message from read buffer
+    size_t remain = conn->rbuf_size - 4 - len;
+    if (remain) {
+        /*copying everying after previous message into the start of the reading buffer
+        using memmove because the regions of memory we are copying to overlap so we need the
+        safety guarantees to avoid undefined behavior*/
+        memmove(conn->rbuf, &conn->rbuf[4 + len], remain);
+    }
+    conn->rbuf_size = remain;
+    conn->state = STATE_RES;
+    state_res(conn);
+
+    return (conn->state == STATE_REQ);
+}
+
+static void state_res(Conn *conn) {
+    while (try_flush_buffer(conn)) {}
+}
+
+static bool try_flush_buffer(Conn *conn) {
+    ssize_t rv = 0;
+    do {
+        size_t remain = conn->wbuf_size - conn->wbuf_sent;
+        rv = write(conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
+    } while (rv < 0 && errno == EINTR);
+
+    if (rv < 0 && errno == EAGAIN) {
+        //got EAGAIN stop - error in c indicating that a resource is temporarily unavailable
+        return false;
+    }
+    if (rv < 0) {
+        msg("write() error");
+        conn->state = STATE_END;
+        return false;
+    }
+
+    conn->wbuf_sent += (size_t)rv;
+    assert(conn->wbuf_sent <= conn->wbuf_size);
+    if (conn->wbuf_sent == conn->wbuf_size) {
+        //response was fully sent, can change state back
+        conn->state = STATE_REQ;
+        conn->wbuf_sent = 0;
+        conn->wbuf_size = 0;
+        return false;
+    }
+    //still data in the buffer try to write again
+    return true;
 }
 
 int main() {
@@ -203,17 +316,16 @@ int main() {
     //event loop implementation
     std::vector<struct pollfd> poll_args;
     while (true) {
-        //prepare arguments for poll
+        //empty argument array and push listening fd to 0th index
         poll_args.clear();
-        //listening fd in first position
         struct pollfd pfd = {fd, POLL_IN, 0};
         poll_args.push_back(pfd);
-        //connection file descriptors
+        //iteration through all current connections
         for (Conn *conn : fd2conn) {
             if(!conn){
                 continue;
             }
-            //building pfd from each connection
+            //building pfd from each connection and adding to the list of connections in poll args
             struct pollfd pfd = {};
             pfd.fd = conn->fd;
             pfd.events = (conn->state == STATE_REQ) ? POLL_IN : POLL_OUT;
@@ -248,6 +360,5 @@ int main() {
             (void)accept_new_conn(fd2conn, fd);
         }
     }
-
     return 0;
 }
