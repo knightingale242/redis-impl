@@ -19,6 +19,8 @@ enum {
     STATE_END = 2,
 };
 
+const size_t k_max_msg = 4096;
+
 struct Conn {
     int fd = -1;
     uint32_t state = 0;
@@ -80,8 +82,6 @@ static void fd_set_nb(int fd){
         die("fnctl error");
     }
 }
-
-const size_t k_max_msg = 4096;
 
 //parser to handle incoming requests
 //same as client but start with reading and then writing
@@ -161,53 +161,38 @@ static int32_t accept_new_conn(std::vector<Conn *> &fd2conn, int fd) {
     return 0;
 }
 
-static void connection_io(Conn *conn){
-    if (conn->state == STATE_REQ) {
-        state_req(conn);
-    }
-    else if (conn->state == STATE_RES) {
-        state_res(conn);
-    }
-    else {
-        assert(0); //not expected
-    }
-}
-
-static void state_req(Conn *conn) {
-    while(try_fill_buffer(conn));
-}
-
-static bool try_fill_buffer(Conn *conn) {
-    //rbuf_size = temp value to keep track of how big the buffer currently is
-    //sizeof(rbuf) gets the max size the buffer should be
-    assert(conn->rbuf_size < sizeof(conn->rbuf));
+static bool try_flush_buffer(Conn *conn) {
     ssize_t rv = 0;
     do {
-        size_t cap = sizeof(conn->rbuf) - conn->rbuf_size; //max value able to read into the buffer right now
-        rv = read(conn->fd, &conn->rbuf[conn->rbuf_size], cap);
+        size_t remain = conn->wbuf_size - conn->wbuf_sent;
+        rv = write(conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
     } while (rv < 0 && errno == EINTR);
 
     if (rv < 0 && errno == EAGAIN) {
+        //got EAGAIN stop - error in c indicating that a resource is temporarily unavailable
         return false;
     }
-    if (rv < 0){
-        msg("read() error");
+    if (rv < 0) {
+        msg("write() error");
+        conn->state = STATE_END;
         return false;
     }
-    if (rv == 0) {
-        if (conn->rbuf_size > 0) {
-            msg("unexpected EOF");
-        }
-        else {
-            msg("EOF");
-        }
+
+    conn->wbuf_sent += (size_t)rv;
+    assert(conn->wbuf_sent <= conn->wbuf_size);
+    if (conn->wbuf_sent == conn->wbuf_size) {
+        //response was fully sent, can change state back
+        conn->state = STATE_REQ;
+        conn->wbuf_sent = 0;
+        conn->wbuf_size = 0;
+        return false;
     }
+    //still data in the buffer try to write again
+    return true;
+}
 
-    conn->rbuf_size += sizeof(rv); //add however much was read into the buffer to the current size of the buffer
-    assert(conn->rbuf_size <= sizeof(conn->rbuf));
-
-    while(try_one_request(conn)) {} //clients could send multiple requests without waiting for responses which is why we loop
-    return (conn->state == STATE_REQ);
+static void state_res(Conn *conn) {
+    while (try_flush_buffer(conn)) {}
 }
 
 static bool try_one_request(Conn *conn) {
@@ -253,38 +238,53 @@ static bool try_one_request(Conn *conn) {
     return (conn->state == STATE_REQ);
 }
 
-static void state_res(Conn *conn) {
-    while (try_flush_buffer(conn)) {}
-}
-
-static bool try_flush_buffer(Conn *conn) {
+static bool try_fill_buffer(Conn *conn) {
+    //rbuf_size = temp value to keep track of how big the buffer currently is
+    //sizeof(rbuf) gets the max size the buffer should be
+    assert(conn->rbuf_size < sizeof(conn->rbuf));
     ssize_t rv = 0;
     do {
-        size_t remain = conn->wbuf_size - conn->wbuf_sent;
-        rv = write(conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
+        size_t cap = sizeof(conn->rbuf) - conn->rbuf_size; //max value able to read into the buffer right now
+        rv = read(conn->fd, &conn->rbuf[conn->rbuf_size], cap);
     } while (rv < 0 && errno == EINTR);
 
     if (rv < 0 && errno == EAGAIN) {
-        //got EAGAIN stop - error in c indicating that a resource is temporarily unavailable
         return false;
     }
-    if (rv < 0) {
-        msg("write() error");
-        conn->state = STATE_END;
+    if (rv < 0){
+        msg("read() error");
         return false;
+    }
+    if (rv == 0) {
+        if (conn->rbuf_size > 0) {
+            msg("unexpected EOF");
+        }
+        else {
+            msg("EOF");
+        }
     }
 
-    conn->wbuf_sent += (size_t)rv;
-    assert(conn->wbuf_sent <= conn->wbuf_size);
-    if (conn->wbuf_sent == conn->wbuf_size) {
-        //response was fully sent, can change state back
-        conn->state = STATE_REQ;
-        conn->wbuf_sent = 0;
-        conn->wbuf_size = 0;
-        return false;
+    conn->rbuf_size += sizeof(rv); //add however much was read into the buffer to the current size of the buffer
+    assert(conn->rbuf_size <= sizeof(conn->rbuf));
+
+    while(try_one_request(conn)) {} //clients could send multiple requests without waiting for responses which is why we loop
+    return (conn->state == STATE_REQ);
+}
+
+static void state_req(Conn *conn) {
+    while(try_fill_buffer(conn));
+}
+
+static void connection_io(Conn *conn){
+    if (conn->state == STATE_REQ) {
+        state_req(conn);
     }
-    //still data in the buffer try to write again
-    return true;
+    else if (conn->state == STATE_RES) {
+        state_res(conn);
+    }
+    else {
+        assert(0); //not expected
+    }
 }
 
 int main() {
@@ -304,7 +304,7 @@ int main() {
     addr.sin_addr.s_addr = ntohl(0);    // wildcard address 0.0.0.0
     int rv = bind(fd, (const sockaddr *)&addr, sizeof(addr));
     if (rv) {
-        die("bind()");
+        die("bind() error!");
     }
 
     //list of all client connections
