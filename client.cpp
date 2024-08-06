@@ -62,6 +62,7 @@ static int32_t send_req(int fd, const char *text) {
     memcpy(&wbuf[4], text, len); //copying the actual text to be sent into the rest of the write buffer
     return write_all(fd, wbuf, 4 + len);
 }
+
 static int32_t read_res(int fd) {
     //receiving the response from the server
     char rbuf[4 + k_max_msg + 1]; //buffer to read in response in same define format: | len | message |

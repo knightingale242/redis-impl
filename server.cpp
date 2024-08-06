@@ -307,8 +307,13 @@ int main() {
         die("bind() error!");
     }
 
+    rv = listen(fd, SOMAXCONN);
+    if (rv) {
+        die("listen() error");
+    }
+
     //list of all client connections
-    std::vector<Conn *>fd2conn;
+    std::vector<Conn *> fd2conn;
 
     //set listening fd to noblocking
     fd_set_nb(fd);
